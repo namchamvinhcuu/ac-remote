@@ -1,4 +1,4 @@
-"""Logging: stdout + rotating file under LOG_DIR."""
+"""Logging: stderr + rotating file under LOG_DIR."""
 
 import logging
 import os

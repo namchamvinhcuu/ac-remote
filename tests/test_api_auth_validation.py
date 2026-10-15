@@ -186,7 +186,8 @@ def test_sent_packet_is_the_built_ir_packet(env):
 
 # --- RM4 failure ---
 
-def test_rm4_failure_is_502_with_host_and_keeps_previous_state(tmp_path):
+def test_rm4_failure_is_502_without_host_in_detail_logs_host_and_keeps_previous_state(tmp_path, caplog):
+    # Regression (round-2 review): the RM4 host / exception text must not reach the HTTP client, only the server log.
     units = {"midea": Unit("midea", "Midea", "coolix", "10.0.0.2")}
     store = StateStore(tmp_path / "state.json")
     store.set("midea", {"power": False, "mode": "cool", "temp": 25, "fan": "auto"})
@@ -194,9 +195,15 @@ def test_rm4_failure_is_502_with_host_and_keeps_previous_state(tmp_path):
     client = TestClient(create_app(units, store, lambda _h: rm4, *AUTH))
 
     rm4.fail = True
-    res = client.post("/api/units/midea", json={"power": True, "temp": 20}, auth=AUTH)
+    with caplog.at_level(logging.ERROR, logger="app.main"):
+        res = client.post("/api/units/midea", json={"power": True, "temp": 20}, auth=AUTH)
     assert res.status_code == 502
-    assert "10.0.0.2" in res.json()["detail"]
+    assert res.json()["detail"] == "RM4 unreachable for unit 'midea'; see server log"
+    assert "10.0.0.2" not in res.text and "no reply" not in res.text
+    errors = [r for r in caplog.records if r.name == "app.main" and r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "10.0.0.2" in errors[0].getMessage() and "unit=midea" in errors[0].getMessage()
+    assert errors[0].exc_info is not None and "no reply" in str(errors[0].exc_info[1])
     assert store.get("midea")["power"] is False
     assert StateStore(tmp_path / "state.json").get("midea")["power"] is False
 
@@ -244,6 +251,65 @@ def test_healthz_has_no_cache_control_override(env):
     res = client.get("/healthz")
     assert res.status_code == 200
     assert "cache-control" not in res.headers
+
+
+# --- regression guards for the OpenClaw round-2 fixes ---
+
+@pytest.mark.parametrize("method,path,body,creds,status", [
+    ("GET", "/", None, AUTH, 200),
+    ("GET", "/api/units", None, AUTH, 200),
+    ("POST", "/api/units/midea", {"power": True}, AUTH, 200),
+    ("GET", "/", None, None, 401),
+    ("POST", "/api/units/midea", {"power": True}, (USER, "wrong"), 401),
+    ("POST", "/api/units/midea", {"power": True, "temp": 99}, AUTH, 422),
+])
+def test_anti_framing_headers_on_every_non_health_response(env, method, path, body, creds, status):
+    # Regression (clickjacking): no other site may frame the control page or the API.
+    client, *_ = env
+    res = client.request(method, path, json=body, auth=creds)
+    assert res.status_code == status
+    assert res.headers.get("x-frame-options") == "DENY"
+    assert res.headers.get("content-security-policy") == "frame-ancestors 'none'"
+
+
+def test_healthz_has_no_anti_framing_headers(env):
+    client, *_ = env
+    res = client.get("/healthz")
+    assert res.status_code == 200
+    assert "x-frame-options" not in res.headers and "content-security-policy" not in res.headers
+
+
+@pytest.mark.parametrize("content_type", [
+    None, "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x",
+])
+def test_command_with_non_json_content_type_is_422_and_sends_nothing(env, content_type):
+    # CSRF guard: a cross-site <form> or a "simple" fetch cannot set application/json, so such a POST must not
+    # switch the A/C even when the browser attaches cached Basic credentials. Relies on FastAPI strict_content_type.
+    client, _, senders, state_path = env
+    headers = {} if content_type is None else {"content-type": content_type}
+    res = client.post("/api/units/midea", content=b'{"power": true}', headers=headers, auth=AUTH)
+    assert res.status_code == 422, res.text
+    assert _nothing_sent(senders)
+    assert not state_path.exists()
+
+
+def test_command_with_json_content_type_still_works(env):
+    # Control for the CSRF guard above: the same body with application/json is accepted.
+    client, _, senders, _ = env
+    res = client.post("/api/units/midea", content=b'{"power": true}', headers={"content-type": "application/json"}, auth=AUTH)
+    assert res.status_code == 200, res.text
+    assert len(senders["10.0.0.2"].sent) == 1
+
+
+def test_static_html_never_builds_markup_from_strings():
+    # XSS guard: unit names/ids come from config and API errors; the UI must use textContent/createElement only.
+    from pathlib import Path
+
+    pages = sorted((Path(__file__).resolve().parent.parent / "app" / "static").glob("*.html"))
+    assert pages, "no static page found"
+    offenders = [f"{p.name}:{n}" for p in pages for n, line in enumerate(p.read_text().splitlines(), 1)
+                 if any(sink in line for sink in ("innerHTML", "insertAdjacentHTML", "outerHTML", "document.write"))]
+    assert offenders == []
 
 
 def test_state_write_failure_still_reports_success_and_logs(tmp_path, caplog):

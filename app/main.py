@@ -45,6 +45,9 @@ def create_app(units: dict[str, Unit], store: StateStore, sender_for: Callable[[
         response = await call_next(request)
         if request.url.path != "/healthz":
             response.headers["Cache-Control"] = "no-store"
+            # Anti-clickjacking: no other site may frame the control page.
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
         return response
 
     def require_auth(creds: HTTPBasicCredentials = Depends(security)) -> str:
@@ -81,8 +84,9 @@ def create_app(units: dict[str, Unit], store: StateStore, sender_for: Callable[[
         try:
             await run_in_threadpool(sender_for(unit.rm4_host).send, packet)
         except Exception as exc:
-            log.exception("command failed unit=%s user=%s", unit_id, who)
-            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"RM4 {unit.rm4_host} unreachable: {exc}") from exc
+            log.exception("command failed unit=%s user=%s host=%s", unit_id, who, unit.rm4_host)
+            # Host and exception text stay in the server log only (path-rule: no RM4 host in the page).
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"RM4 unreachable for unit {unit_id!r}; see server log") from exc
 
         state = {"power": cmd.power, "mode": cmd.mode, "temp": cmd.temp, "fan": fan}
         try:

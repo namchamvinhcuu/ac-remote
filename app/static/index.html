@@ -29,41 +29,72 @@ const FANS = { mitsubishi112: ["quiet", "low", "med", "max"], coolix: ["auto", "
 const MODES = ["cool", "heat", "dry", "auto"];
 const LIMITS = { mitsubishi112: [16, 31], coolix: [17, 30] };
 
+// Throws an Error carrying the HTTP status and the server's detail (string or pydantic list), even for non-JSON bodies.
+async function api(path, options) {
+  const res = await fetch(path, options);
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* proxy error pages are HTML: fall back to the status line */ }
+  if (!res.ok) {
+    let detail = body && body.detail;
+    if (Array.isArray(detail)) detail = detail.map(d => d.msg || JSON.stringify(d)).join("; ");
+    throw new Error(`HTTP ${res.status} ${detail || res.statusText}`);
+  }
+  return body;
+}
+
+function el(tag, props = {}, children = []) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+
 async function send(unit, state, card) {
   const err = card.querySelector(".err");
   err.textContent = "Đang gửi…";
   try {
-    const res = await fetch(`/api/units/${unit.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
-    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-    unit.state = (await res.json()).state;
-    err.textContent = "";
+    const body = await api(`/api/units/${encodeURIComponent(unit.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
+    unit.state = body.state;
     render(unit, card);
   } catch (e) { err.textContent = `Lỗi: ${e.message}`; }
 }
 
 function render(unit, card) {
+  const known = unit.state != null;
   const s = unit.state || { power: false, mode: "cool", temp: 25, fan: FANS[unit.protocol][unit.protocol === "coolix" ? 0 : 2] };
   const [lo, hi] = LIMITS[unit.protocol];
-  card.innerHTML = `
-    <h2>${unit.name}</h2><div class="muted">${unit.protocol} · trạng thái lệnh cuối (IR một chiều)</div>
-    <div class="row"><button class="power ${s.power ? "on" : "off"}">${s.power ? "ĐANG BẬT — bấm để tắt" : "ĐANG TẮT — bấm để bật"}</button></div>
-    <div class="row"><button data-d="-1">−</button><span class="temp">${s.temp}°</span><button data-d="1">+</button></div>
-    <div class="row"><select class="mode">${MODES.map(m => `<option ${m === s.mode ? "selected" : ""}>${m}</option>`).join("")}</select>
-      <select class="fan">${FANS[unit.protocol].map(f => `<option ${f === s.fan ? "selected" : ""}>${f}</option>`).join("")}</select></div>
-    <div class="err"></div>`;
-  card.querySelector(".power").onclick = () => send(unit, { ...s, power: !s.power }, card);
-  card.querySelectorAll("[data-d]").forEach(b => b.onclick = () => {
-    const temp = Math.min(hi, Math.max(lo, s.temp + Number(b.dataset.d)));
-    send(unit, { ...s, power: true, temp }, card);
-  });
-  card.querySelector(".mode").onchange = e => send(unit, { ...s, power: true, mode: e.target.value }, card);
-  card.querySelector(".fan").onchange = e => send(unit, { ...s, power: true, fan: e.target.value }, card);
+  const label = !known ? "Chưa có lệnh nào — bấm để bật" : s.power ? "Lệnh cuối: BẬT — bấm để tắt" : "Lệnh cuối: TẮT — bấm để bật";
+  const power = el("button", { className: `power ${s.power ? "on" : "off"}`, textContent: label });
+  const minus = el("button", { textContent: "−" });
+  const plus = el("button", { textContent: "+" });
+  const mode = el("select", {}, MODES.map(m => new Option(m, m, false, m === s.mode)));
+  const fan = el("select", {}, FANS[unit.protocol].map(f => new Option(f, f, false, f === s.fan)));
+  card.replaceChildren(
+    el("h2", { textContent: unit.name }),
+    el("div", { className: "muted", textContent: `${unit.protocol} · trạng thái lệnh cuối (IR một chiều, không đọc được máy thật)` }),
+    el("div", { className: "row" }, [power]),
+    el("div", { className: "row" }, [minus, el("span", { className: "temp", textContent: known ? `${s.temp}°` : "–" }), plus]),
+    el("div", { className: "row" }, [mode, fan]),
+    el("div", { className: "err" }),
+  );
+  power.onclick = () => send(unit, { ...s, power: !s.power }, card);
+  for (const [button, d] of [[minus, -1], [plus, 1]]) {
+    button.onclick = () => send(unit, { ...s, power: true, temp: Math.min(hi, Math.max(lo, s.temp + d)) }, card);
+  }
+  mode.onchange = e => send(unit, { ...s, power: true, mode: e.target.value }, card);
+  fan.onchange = e => send(unit, { ...s, power: true, fan: e.target.value }, card);
 }
 
 (async () => {
-  const units = await (await fetch("/api/units")).json();
   const grid = document.getElementById("units");
-  for (const unit of units) { const card = document.createElement("div"); card.className = "card"; grid.appendChild(card); render(unit, card); }
+  try {
+    for (const unit of await api("/api/units")) {
+      const card = el("div", { className: "card" });
+      grid.appendChild(card);
+      render(unit, card);
+    }
+  } catch (e) {
+    grid.replaceChildren(el("div", { className: "err", textContent: `Không tải được danh sách máy lạnh: ${e.message}` }));
+  }
 })();
 </script>
 </body>
