@@ -9,4 +9,7 @@ units:
   - id: midea
     name: Midea
     protocol: coolix
-    # rm4_host: 192.168.5.49  # a second RM4 mini placed near one Midea unit
+  - id: midea2
+    name: Midea 2
+    protocol: coolix
+    rm4_host: 192.168.5.53    # second RM4 mini, placed so only midea2 sees its IR
