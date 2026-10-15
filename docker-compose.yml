@@ -1,0 +1,38 @@
+services:
+  ac-remote:
+    build: .
+    image: ac-remote:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      UNITS_FILE: /app/config/units.yaml
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+    ports:
+      # Default: localhost only. Set BIND_ADDR to the VPS Tailscale IP to reach it over the tailnet.
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-8080}:8000"
+    volumes:
+      - ./config:/app/config:ro
+      # Named volumes inherit the image's uid 10001 ownership on first use (a missing bind dir would be root-owned).
+      - ac-data:/app/data
+      - ac-logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  ac-data:
+  ac-logs:
+
+networks:
+  default:
+    ipam:
+      config:
+        # Fixed subnet so Docker never picks a 192.168.x pool overlapping the home LAN (RM4 at 192.168.5.48).
+        - subnet: 172.30.50.0/24

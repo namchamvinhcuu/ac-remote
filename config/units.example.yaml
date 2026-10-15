@@ -1,0 +1,12 @@
+# Copy to config/units.yaml and adjust.
+rm4:
+  host: 192.168.5.48          # default RM4 mini for every unit
+
+units:
+  - id: reetech
+    name: Reetech
+    protocol: mitsubishi112
+  - id: midea
+    name: Midea
+    protocol: coolix
+    # rm4_host: 192.168.5.49  # a second RM4 mini placed near one Midea unit

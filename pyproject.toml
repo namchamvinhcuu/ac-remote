@@ -1,0 +1,9 @@
+[project]
+name = "ac-remote"
+version = "0.1.0"
+description = "Control A/C units over IR through a BroadLink RM4 mini"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

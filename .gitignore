@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+data/
+logs/
+config/units.yaml
+
+# Claude Code harness (per-machine symlinks / generated)
+.claude/
+.gemini/
+.serena/
+.obsidian-vault
+.*-skill
+graphify-out/
+.vault-portal.conf
+CLAUDE.md
+AGENTS.md
+.claude/
+.gemini/
+.vault-portal.conf

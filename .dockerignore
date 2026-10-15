@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+data
+logs
+config/units.yaml
+**/__pycache__
+.pytest_cache
+tests
+.claude
+.gemini
+.serena
+graphify-out
+.obsidian-vault
+.*-skill
+.vscode

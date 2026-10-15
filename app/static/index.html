@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Máy lạnh</title>
+<style>
+  :root { --bg: #f5f6f8; --card: #fff; --fg: #1d2129; --muted: #6b7280; --accent: #2563eb; --on: #16a34a; --off: #9ca3af; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111318; --card: #1c1f26; --fg: #e5e7eb; --muted: #9ca3af; } }
+  body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 1.3rem; margin: 0 0 16px; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .card h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .temp { font-size: 2rem; font-weight: 600; min-width: 4ch; text-align: center; }
+  button, select { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--off); background: var(--card); color: var(--fg); }
+  button.power { flex: 1; color: #fff; border: 0; }
+  button.power.on { background: var(--on); } button.power.off { background: var(--off); }
+  .err { color: #dc2626; font-size: .85rem; min-height: 1em; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>Máy lạnh</h1>
+<div class="grid" id="units"></div>
+<script>
+const FANS = { mitsubishi112: ["quiet", "low", "med", "max"], coolix: ["auto", "min", "med", "max"] };
+const MODES = ["cool", "heat", "dry", "auto"];
+const LIMITS = { mitsubishi112: [16, 31], coolix: [17, 30] };
+
+async function send(unit, state, card) {
+  const err = card.querySelector(".err");
+  err.textContent = "Đang gửi…";
+  try {
+    const res = await fetch(`/api/units/${unit.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state) });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    unit.state = (await res.json()).state;
+    err.textContent = "";
+    render(unit, card);
+  } catch (e) { err.textContent = `Lỗi: ${e.message}`; }
+}
+
+function render(unit, card) {
+  const s = unit.state || { power: false, mode: "cool", temp: 25, fan: FANS[unit.protocol][unit.protocol === "coolix" ? 0 : 2] };
+  const [lo, hi] = LIMITS[unit.protocol];
+  card.innerHTML = `
+    <h2>${unit.name}</h2><div class="muted">${unit.protocol} · trạng thái lệnh cuối (IR một chiều)</div>
+    <div class="row"><button class="power ${s.power ? "on" : "off"}">${s.power ? "ĐANG BẬT — bấm để tắt" : "ĐANG TẮT — bấm để bật"}</button></div>
+    <div class="row"><button data-d="-1">−</button><span class="temp">${s.temp}°</span><button data-d="1">+</button></div>
+    <div class="row"><select class="mode">${MODES.map(m => `<option ${m === s.mode ? "selected" : ""}>${m}</option>`).join("")}</select>
+      <select class="fan">${FANS[unit.protocol].map(f => `<option ${f === s.fan ? "selected" : ""}>${f}</option>`).join("")}</select></div>
+    <div class="err"></div>`;
+  card.querySelector(".power").onclick = () => send(unit, { ...s, power: !s.power }, card);
+  card.querySelectorAll("[data-d]").forEach(b => b.onclick = () => {
+    const temp = Math.min(hi, Math.max(lo, s.temp + Number(b.dataset.d)));
+    send(unit, { ...s, power: true, temp }, card);
+  });
+  card.querySelector(".mode").onchange = e => send(unit, { ...s, power: true, mode: e.target.value }, card);
+  card.querySelector(".fan").onchange = e => send(unit, { ...s, power: true, fan: e.target.value }, card);
+}
+
+(async () => {
+  const units = await (await fetch("/api/units")).json();
+  const grid = document.getElementById("units");
+  for (const unit of units) { const card = document.createElement("div"); card.className = "card"; grid.appendChild(card); render(unit, card); }
+})();
+</script>
+</body>
+</html>
