@@ -4,6 +4,7 @@ The CLI talks urllib, so TestClient cannot be injected; a real server keeps the 
 JSON body, HTTP error mapping) under test. The RM4 is a fake — nothing reaches real hardware.
 """
 
+import http.client
 import json
 import os
 import socket
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -253,10 +255,30 @@ def _http(body: bytes, content_type: str) -> bytes:
     return head.encode() + body
 
 
+def _read_request(conn) -> bytes:
+    """Read headers plus the Content-Length body. http.client sends a POST body in a separate send(), and closing
+    with it still unread makes Linux answer with RST instead of FIN — the client then sees ConnectionResetError."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = conn.recv(65536)
+        if not chunk:
+            return data
+        data += chunk
+    head, body = data.split(b"\r\n\r\n", 1)
+    length = next((int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")[1:] if line.lower().startswith(b"content-length:")), 0)
+    while len(body) < length:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    return data
+
+
 @pytest.fixture
 def rogue():
-    """rogue(behaviour, on="any"|"POST", units=None) -> (url, requests). Behaviour: close | html | hang.
-    With on="POST", GET /api/units is answered with `units` and only the POST misbehaves."""
+    """rogue(behaviour, on="any"|"POST", units=None) -> (url, requests). Behaviour: close | html | hang | truncated.
+    With on="POST", GET /api/units is answered with `units` and only the POST misbehaves.
+    truncated: a 502 status line whose body stops after a few of the announced Content-Length bytes."""
     listeners, held = [], []
 
     def start(behaviour: str, on: str = "any", units: list | None = None):
@@ -275,7 +297,7 @@ def rogue():
                 except OSError:
                     continue
                 conn.settimeout(5)
-                request_line = conn.recv(65536).split(b"\r\n", 1)[0].decode()
+                request_line = _read_request(conn).split(b"\r\n", 1)[0].decode()
                 requests.append(request_line)
                 if on == "POST" and not request_line.startswith("POST"):
                     conn.sendall(_http(units_json, "application/json"))
@@ -284,6 +306,10 @@ def rogue():
                     conn.close()
                 elif behaviour == "html":
                     conn.sendall(_http(b"<html>proxy login</html>", "text/html"))
+                    conn.close()
+                elif behaviour == "truncated":
+                    head = "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n"
+                    conn.sendall(head.encode() + b'{"detail": "RM4')
                     conn.close()
                 else:  # hang: keep the connection open, never answer
                     held.append(conn)
@@ -350,3 +376,48 @@ def test_unit_id_is_url_quoted_in_the_post_path(rogue):
     url, requests = rogue("close", on="POST", units=[{"id": "a/b?c", "name": "x", "protocol": "coolix", "state": None}])
     cli(url, "a/b?c", "on")
     assert requests[-1].split(" ")[1] == "/api/units/a%2Fb%3Fc"
+
+
+# --- HTTP error whose body cannot be read (python-reviewer finding, 2026-10-15) ----------------------------------
+
+
+@pytest.mark.parametrize("args,on,request_part", [(["list"], "any", "GET /api/units"), (["midea", "on"], "POST", "POST /api/units/midea")])
+def test_http_error_with_truncated_body_is_a_clean_error(rogue, args, on, request_part):
+    # Regression: exc.read() in the HTTPError handler raised IncompleteRead on a body cut short, escaping as a traceback.
+    url, _ = rogue("truncated", on=on)
+    line = _assert_clean_error(cli(url, *args), f"HTTP 502 {request_part}", "error body unreadable", "IncompleteRead")
+    assert "no valid response from" not in line  # the status code arrived; it is reported as an HTTP error
+
+
+class _BrokenBody:
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+    def read(self, *args):
+        raise self.exc
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize(
+    "read_exc,name",
+    [(http.client.IncompleteRead(b'{"det', 40), "IncompleteRead"), (ConnectionResetError(104, "Connection reset by peer"), "ConnectionResetError")],
+)
+def test_http_error_body_read_failure_raises_api_error(monkeypatch, read_exc, name):
+    # Regression (same finding): any OSError / HTTPException while reading the error body still maps to ApiError.
+    from app import cli as cli_module
+
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 503, "Service Unavailable", http.client.HTTPMessage(), _BrokenBody(read_exc))
+
+    monkeypatch.setenv("AC_REMOTE_URL", "http://127.0.0.1:1")
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(cli_module.ApiError) as err:
+        cli_module.run(["list"])
+
+    assert str(err.value).startswith("HTTP 503 GET /api/units: <error body unreadable: ")
+    assert name in str(err.value)
+    assert isinstance(err.value.__cause__, urllib.error.HTTPError)
+    assert cli_module.main(["list"]) == 1

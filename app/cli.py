@@ -44,7 +44,11 @@ def _request(method: str, path: str, body: dict | None = None):
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as res:
             return json.loads(res.read())
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
+        try:
+            detail = exc.read().decode(errors="replace")
+        except (OSError, http.client.HTTPException) as read_exc:
+            # The status line arrived but the error body did not; still report the HTTP code cleanly.
+            detail = f"<error body unreadable: {read_exc!r}>"
         try:
             detail = json.loads(detail).get("detail", detail)
         except (ValueError, AttributeError):
