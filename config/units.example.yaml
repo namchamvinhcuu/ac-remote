@@ -13,3 +13,8 @@ units:
     name: Midea 2
     protocol: coolix
     rm4_host: 192.168.5.53    # second RM4 mini, placed so only midea2 sees its IR
+  # Daikin with an ARC480-family remote (home site, its own RM4 mini):
+  # - id: daikin
+  #   name: Daikin
+  #   protocol: daikin152
+  #   rm4_host: 192.168.68.59

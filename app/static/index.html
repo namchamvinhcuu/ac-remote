@@ -25,9 +25,13 @@
 <h1>Máy lạnh</h1>
 <div class="grid" id="units"></div>
 <script>
-const FANS = { mitsubishi112: ["quiet", "low", "med", "max"], coolix: ["auto", "min", "med", "max"] };
+const FANS = {
+  mitsubishi112: ["quiet", "low", "med", "max"],
+  coolix: ["auto", "min", "med", "max"],
+  daikin152: ["auto", "quiet", "min", "low", "med", "high", "max"],
+};
 const MODES = ["cool", "heat", "dry", "auto"];
-const LIMITS = { mitsubishi112: [16, 31], coolix: [17, 30] };
+const LIMITS = { mitsubishi112: [16, 31], coolix: [17, 30], daikin152: [18, 32] };
 
 // Throws an Error carrying the HTTP status and the server's detail (string or pydantic list), even for non-JSON bodies.
 async function api(path, options) {
@@ -60,7 +64,7 @@ async function send(unit, state, card) {
 
 function render(unit, card) {
   const known = unit.state != null;
-  const s = unit.state || { power: false, mode: "cool", temp: 25, fan: FANS[unit.protocol][unit.protocol === "coolix" ? 0 : 2] };
+  const s = unit.state || { power: false, mode: "cool", temp: 25, fan: FANS[unit.protocol][unit.protocol === "mitsubishi112" ? 2 : 0] };
   const [lo, hi] = LIMITS[unit.protocol];
   const label = !known ? "Chưa có lệnh nào — bấm để bật" : s.power ? "Lệnh cuối: BẬT — bấm để tắt" : "Lệnh cuối: TẮT — bấm để bật";
   const power = el("button", { className: `power ${s.power ? "on" : "off"}`, textContent: label });

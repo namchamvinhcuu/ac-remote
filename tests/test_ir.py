@@ -3,7 +3,7 @@
 import pytest
 from broadlink.remote import data_to_pulses, pulses_to_data
 
-from app.ir import build_packet, coolix, mitsubishi112
+from app.ir import build_packet, coolix, daikin152, mitsubishi112
 
 # Learned by the RM4 mini from the Reetech remote (power off, cool 25°C, fan med).
 LEARNED_REETECH_OFF = bytes.fromhex(
@@ -45,6 +45,23 @@ LEARNED_MIDEA_OFF = bytes.fromhex(
     "111111351012111210351012101310341233121111351012103510351035113411111234103510351111111112111111113411121112103510"
     "351035111111121111111112111112101310121035103511341134113411000d05"
 )
+# Learned by the home RM4 mini from the Daikin ARC480-family remote on 2026-10-28 (power on, cool 27°C, fan quiet).
+# Replayed byte-identical, it turned the real unit on.
+LEARNED_DAIKIN_ON_COOL27 = bytes.fromhex(
+    "260044010e0d0f0e0e0e0d0f0d0e0e00032d6f390d2a0e0e0e0e0d0f0d2a0d0f0e0e0e0e0e0e0d2b0d0e0e2a0d2a0e0e0e290f2a0d2a0e2a0d2a"
+    "0e0e0f0d0e2a0e0e0d0f0d0f0d0e0e0e0d0f0d0f0d0e0e0e0e0e0e0f0d0e0e0e0d0f0d0f0d0e0e0e0d0f0d2a0f0d0e0e0e0e0e2a0d2a0e0e0e0e"
+    "0d0f0d2a0e2b0d0e0e2a0d2a0e0e0d0f0d0f0d0e0f0d0e0f0d0f0d0e0e0e0d0f0d0f0d0e0e0e0d0f0d2a0f2a0d0e0e2a0d0f0d0e0e0e0e0e0d0f"
+    "0e0d0f0e0d0f0d0f0d0e0e0e0d0f0d0f0d0e0e0e0d0f0e0e0e0e0e0e0d0f0d0e0e0e0e0e0d0f0d0e0e0e0e0e0d0f0e0e0e0e0e0e0d0f0d0e0e0e"
+    "0e0e0d0f0d0e0e0e0d0f0e0f0d0e0e0e0d0f0d0f0d0e0e0e0d0f0d0f0d2a0e0e0e2a0e0e0d0f0d0e0e2a0d2a0e0e0f0d0e0f0d0e0e0e0d0f0d0f"
+    "0d0e0e0e0d0f0d0f0d2b0d0f0d0f0d0e0e0e0d0f0d2a0e2a0d0f0d2b0d2a0e2a0d2a0e000d05"
+)
+# The two Daikin states proven on hardware (2026-10-28): the learned ON frame and the OFF state
+# (sent with the learned pulses, power bit cleared); this encoder's own pulse train has not been sent yet.
+DAIKIN_VERIFIED_ON = "11da270000313600b0000000000000c50008f6"
+DAIKIN_VERIFIED_OFF = "11da270000303600b0000000000000c50008f5"
+# 5-bit zero leader (10 pulses) + leader mark + leader gap, then the header mark/space: the state starts at 14.
+DAIKIN_STATE_START = 2 * 5 + 2 + 2
+DAIKIN_FRAME_PULSES = DAIKIN_STATE_START + 152 * 2 + 1  # + trailing mark (the final gap is excluded)
 
 
 def _bits(pulses: list[int], start: int, count: int) -> list[int]:
@@ -100,8 +117,8 @@ def _ticks(pulses: list[int]) -> list[int]:
     return [round(p / TICK) for p in pulses]
 
 
-def _assert_within_two_ticks(generated: list[int], real: list[int]) -> None:
-    gen, ref = _ticks(generated[:FRAME_PULSES]), _ticks(real[:FRAME_PULSES])
+def _assert_within_two_ticks(generated: list[int], real: list[int], frame: int = FRAME_PULSES) -> None:
+    gen, ref = _ticks(generated[:frame]), _ticks(real[:frame])
     off = [(i, g, r) for i, (g, r) in enumerate(zip(gen, ref)) if abs(g - r) > 2]
     assert not off, f"pulses > 2 ticks from the real remote (index, generated, real): {off[:10]}"
 
@@ -201,6 +218,123 @@ def test_coolix_rejects_invalid(kwargs):
     args = {"power": True, "mode": "cool", "temp": 25, "fan": "auto"} | kwargs
     with pytest.raises(ValueError):
         coolix.build_code(**args)
+
+
+# --- Daikin152 (learned from the real ARC480-family remote, 2026-10-28) ---
+
+def _daikin_state(pulses: list[int]) -> bytes:
+    return _lsb_bytes(_bits(pulses, DAIKIN_STATE_START, 152))
+
+
+def _daikin_expected(power: bool, mode: int, temp: int, fan: int) -> bytes:
+    """The learned frame with only power/mode (byte 5), temp (6), fan (8) and checksum (18) replaced."""
+    state = bytearray.fromhex(DAIKIN_VERIFIED_ON)
+    state[5] = (mode << 4) | int(power)
+    state[6] = temp << 1
+    state[8] = fan << 4
+    state[18] = sum(state[:18]) & 0xFF
+    return bytes(state)
+
+
+def test_daikin152_learned_frame_shape_leader_gap_header():
+    pulses = data_to_pulses(LEARNED_DAIKIN_ON_COOL27)
+    assert len(pulses) == DAIKIN_FRAME_PULSES + 1
+    assert _bits(pulses, 0, 5) == [0] * 5  # 5-bit zero leader
+    assert pulses[11] > 20_000  # leader gap (~26.7 ms)
+    assert pulses[12] > 3000 and pulses[13] > 1600  # header mark/space
+
+
+def test_daikin152_learned_on_decodes_to_encoder_state():
+    learned = _daikin_state(data_to_pulses(LEARNED_DAIKIN_ON_COOL27))
+    assert learned.hex() == DAIKIN_VERIFIED_ON
+    assert daikin152.build_state(True, "cool", 27, "quiet") == learned
+
+
+def test_daikin152_off_is_the_verified_state():
+    # This exact state (learned pulses with the power bit cleared, checksum f5) turned the real unit off.
+    assert daikin152.build_state(False, "cool", 27, "quiet").hex() == DAIKIN_VERIFIED_OFF
+
+
+def test_daikin152_on_packet_matches_learned_remote_pulse_for_pulse():
+    generated = data_to_pulses(build_packet("daikin152", True, "cool", 27, "quiet"))
+    real = data_to_pulses(LEARNED_DAIKIN_ON_COOL27)
+    assert len(generated) == len(real) == DAIKIN_FRAME_PULSES + 1
+    _assert_within_two_ticks(generated, real, DAIKIN_FRAME_PULSES)
+    assert generated[-1] >= 100_000 - 2 * TICK  # long final gap kept (value excluded from the tick check)
+
+
+def test_daikin152_off_packet_differs_from_learned_only_in_power_and_checksum_bits():
+    generated = data_to_pulses(build_packet("daikin152", False, "cool", 27, "quiet"))
+    real = data_to_pulses(LEARNED_DAIKIN_ON_COOL27)
+    assert len(generated) == len(real)
+    assert _daikin_state(generated).hex() == DAIKIN_VERIFIED_OFF
+    gen_bits = _bits(generated, DAIKIN_STATE_START, 152)
+    real_bits = _bits(real, DAIKIN_STATE_START, 152)
+    # 0xf6 -> 0xf5 flips checksum bits 0 and 1; power is byte 5 bit 0.
+    assert [i for i, (g, r) in enumerate(zip(gen_bits, real_bits)) if g != r] == [5 * 8, 18 * 8, 18 * 8 + 1]
+
+
+# (power, mode, temp, fan) -> (mode nibble, temp in byte 6, fan nibble) per IRremoteESP8266 Daikin152.
+DAIKIN_CASES = [
+    ((True, "cool", 27, "quiet"), (0b011, 27, 0b1011)),
+    ((True, "cool", 18, "auto"), (0b011, 18, 0b1010)),
+    ((False, "heat", 32, "max"), (0b100, 32, 7)),
+    ((True, "heat", 24, "min"), (0b100, 24, 3)),
+    ((True, "auto", 22, "low"), (0b000, 22, 4)),
+    ((True, "auto", 25, "med"), (0b000, 25, 5)),
+    ((True, "cool", 30, "high"), (0b011, 30, 6)),
+    ((True, "dry", 26, "auto"), (0b010, 26, 0b1010)),  # dry sends the commanded temp (IRac::daikin152)
+]
+
+
+@pytest.mark.parametrize("args,expected", DAIKIN_CASES, ids=lambda v: "-".join(map(str, v)))
+def test_daikin152_fields_and_checksum(args, expected):
+    state = daikin152.build_state(*args)
+    assert state == _daikin_expected(args[0], *expected)
+    assert len(state) == 19
+    assert state[18] == sum(state[:18]) & 0xFF
+
+
+@pytest.mark.parametrize("args,_expected", DAIKIN_CASES, ids=lambda v: "-".join(map(str, v)))
+def test_daikin152_pulses_roundtrip(args, _expected):
+    state = daikin152.build_state(*args)
+    pulses = daikin152.to_pulses(state)
+    assert len(pulses) == DAIKIN_FRAME_PULSES + 1
+    assert _bits(pulses, 0, 5) == [0] * 5
+    assert _daikin_state(pulses) == state
+
+
+@pytest.mark.parametrize("temp", [18, 25, 32])
+@pytest.mark.parametrize("power", [True, False])
+def test_daikin152_dry_sends_the_commanded_temp(temp, power):
+    # IRremoteESP8266 IRac::daikin152 calls setMode() then setTemp(), so dry carries the commanded temp.
+    assert daikin152.build_state(power, "dry", temp, "auto")[6] == temp << 1
+    assert daikin152.build_state(power, "cool", temp, "auto")[6] == temp << 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"temp": 17}, {"temp": 33}, {"mode": "fan"}, {"fan": "turbo"}, {"fan": "bogus"},
+    {"power": False, "temp": 99}, {"power": False, "fan": "bogus"}, {"power": False, "mode": "fan"},
+])
+def test_daikin152_rejects_invalid(kwargs):
+    args = {"power": True, "mode": "cool", "temp": 25, "fan": "auto"} | kwargs
+    with pytest.raises(ValueError):
+        daikin152.build_state(**args)
+
+
+@pytest.mark.parametrize("temp", [18, 32])
+def test_daikin152_temp_range_boundaries_are_accepted(temp):
+    assert daikin152.build_state(True, "cool", temp, "auto")[6] == temp << 1
+
+
+def test_daikin152_packet_is_built_from_daikin_pulses():
+    packet = build_packet("daikin152", True, "heat", 22, "high")
+    assert packet[0] == 0x26
+    assert int.from_bytes(packet[2:4], "little") == len(packet) - 4
+    expected = daikin152.to_pulses(daikin152.build_state(True, "heat", 22, "high"))
+    decoded = data_to_pulses(packet)
+    assert len(decoded) == len(expected)
+    assert all(abs(d - e) < 66 for d, e in zip(decoded, expected))
 
 
 # --- BroadLink packet ---

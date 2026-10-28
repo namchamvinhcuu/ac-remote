@@ -98,6 +98,13 @@ def test_load_units(tmp_path):
     assert units["midea"].rm4_host == "192.168.5.49"
 
 
+def test_load_units_accepts_daikin152(tmp_path):
+    cfg = tmp_path / "units.yaml"
+    cfg.write_text("rm4: {host: 10.0.0.1}\nunits:\n  - {id: daikin, name: Daikin, protocol: daikin152, rm4_host: 10.0.0.3}\n")
+    units = load_units(str(cfg))
+    assert units["daikin"].protocol == "daikin152" and units["daikin"].rm4_host == "10.0.0.3"
+
+
 @pytest.mark.parametrize("body", [
     "units:\n  - {id: a, protocol: coolix}\n",
     "rm4: {host: h}\nunits:\n  - {id: a, protocol: nec}\n",

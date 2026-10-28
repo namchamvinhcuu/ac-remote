@@ -29,8 +29,9 @@ def env(tmp_path):
     units = {
         "reetech": Unit("reetech", "Reetech", "mitsubishi112", "10.0.0.1"),
         "midea": Unit("midea", "Midea", "coolix", "10.0.0.2"),
+        "daikin": Unit("daikin", "Daikin", "daikin152", "10.0.0.3"),
     }
-    senders = {"10.0.0.1": FakeRM4(), "10.0.0.2": FakeRM4()}
+    senders = {"10.0.0.1": FakeRM4(), "10.0.0.2": FakeRM4(), "10.0.0.3": FakeRM4()}
     state_path = tmp_path / "state.json"
     app = create_app(units, StateStore(state_path), senders.__getitem__, USER, PASSWORD)
     return TestClient(app), app, senders, state_path
@@ -112,6 +113,10 @@ INVALID = [
     pytest.param("midea", {"power": True, "mode": "fan"}, id="mode-not-in-literal"),
     pytest.param("midea", {"power": True, "fan": "quiet"}, id="coolix-fan-unknown"),
     pytest.param("reetech", {"power": True, "fan": "auto"}, id="mitsu-fan-unknown"),
+    pytest.param("daikin", {"power": True, "temp": 17}, id="daikin-temp-below-18"),
+    pytest.param("daikin", {"power": True, "temp": 33}, id="daikin-temp-above-32"),
+    pytest.param("daikin", {"power": True, "fan": "turbo"}, id="daikin-fan-unknown"),
+    pytest.param("daikin", {"power": True, "mode": "fan"}, id="daikin-mode-not-in-literal"),
     pytest.param("midea", {"temp": 25}, id="power-missing"),
     pytest.param("midea", {"power": True, "temp": 25.5}, id="temp-fractional"),
     pytest.param("midea", {"power": True, "temp": "hot"}, id="temp-string"),
@@ -132,7 +137,7 @@ def test_invalid_command_is_422_and_sends_nothing(env, unit, body):
     pytest.param({"temp": 99}, id="temp-only"),
     pytest.param({"fan": "bogus"}, id="fan-only"),
 ])
-@pytest.mark.parametrize("unit", ["midea", "reetech"])
+@pytest.mark.parametrize("unit", ["midea", "reetech", "daikin"])
 def test_power_off_with_invalid_settings_is_rejected_for_every_protocol(env, unit, invalid):
     # Power-off must not persist garbage (temp 99 / fan "bogus") as the unit's
     # last commanded state; mitsubishi112 rejects it, coolix must too.
@@ -161,7 +166,9 @@ def test_unknown_unit_is_404_and_sends_nothing(env):
     assert not state_path.exists()
 
 
-@pytest.mark.parametrize("unit,temp", [("midea", 17), ("midea", 30), ("reetech", 16), ("reetech", 31)])
+@pytest.mark.parametrize("unit,temp", [
+    ("midea", 17), ("midea", 30), ("reetech", 16), ("reetech", 31), ("daikin", 18), ("daikin", 32),
+])
 def test_temp_range_boundaries_are_accepted(env, unit, temp):
     client, _, senders, _ = env
     res = client.post(f"/api/units/{unit}", json={"power": True, "temp": temp}, auth=AUTH)
@@ -182,6 +189,31 @@ def test_sent_packet_is_the_built_ir_packet(env):
     client, _, senders, _ = env
     client.post("/api/units/reetech", json={"power": True, "mode": "heat", "temp": 22, "fan": "low"}, auth=AUTH)
     assert senders["10.0.0.1"].sent == [build_packet("mitsubishi112", True, "heat", 22, "low")]
+
+
+def test_daikin_default_fan_is_auto_and_packet_goes_only_to_its_rm4(env):
+    from app.ir import build_packet
+
+    client, _, senders, state_path = env
+    res = client.post("/api/units/daikin", json={"power": True, "temp": 27}, auth=AUTH)
+    assert res.status_code == 200, res.text
+    assert res.json()["state"] == {"power": True, "mode": "cool", "temp": 27, "fan": "auto"}
+    assert senders["10.0.0.3"].sent == [build_packet("daikin152", True, "cool", 27, "auto")]
+    assert not senders["10.0.0.1"].sent and not senders["10.0.0.2"].sent
+    assert state_path.exists()
+
+
+def test_daikin_verified_off_command_sends_the_hardware_verified_off_state(env):
+    from broadlink.remote import data_to_pulses
+
+    client, _, senders, _ = env
+    res = client.post("/api/units/daikin", json={"power": False, "temp": 27, "fan": "quiet"}, auth=AUTH)
+    assert res.status_code == 200, res.text
+    [packet] = senders["10.0.0.3"].sent
+    pulses = data_to_pulses(packet)
+    bits = [1 if pulses[14 + 2 * i + 1] > 900 else 0 for i in range(152)]  # 12 leader pulses + header
+    state = bytes(sum(b << i for i, b in enumerate(bits[n:n + 8])) for n in range(0, 152, 8))
+    assert state.hex() == "11da270000303600b0000000000000c50008f5"  # turned the real unit off (2026-10-28)
 
 
 # --- RM4 failure ---

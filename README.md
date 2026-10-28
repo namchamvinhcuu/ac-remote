@@ -15,6 +15,7 @@ chat bot ──SSH──► python -m app.cli ┘
 |---|---|---|
 | `mitsubishi112` | Reetech (Mitsubishi Electric 112-bit) | off (learned code); on cool 20°C / 25°C fan med (generated) |
 | `coolix` | Midea (Coolix 24-bit) | off; on cool 20°C / 22°C / 25°C fan auto (generated) |
+| `daikin152` | Daikin (152-bit, ARC480-family remote) | state bytes of on / off cool 27°C fan quiet (on learned, off = learned pulses with the power bit cleared); generated pulses not sent yet — 2026-10-28 |
 
 Codes are generated from the protocol layout (IRremoteESP8266), so every temperature/mode/fan
 combination is available without learning each button. Settings other than those above are not

@@ -30,7 +30,7 @@ class Command(BaseModel):
     fan: str | None = None  # protocol default when omitted
 
 
-_DEFAULT_FAN = {"mitsubishi112": "med", "coolix": "auto"}
+_DEFAULT_FAN = {"mitsubishi112": "med", "coolix": "auto", "daikin152": "auto"}
 _PLACEHOLDER_PASSWORD = "change-me"
 _MIN_PASSWORD_LEN = 12
 
