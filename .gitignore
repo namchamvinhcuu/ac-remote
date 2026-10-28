@@ -5,6 +5,8 @@ __pycache__/
 data/
 logs/
 config/units.yaml
+# Written by `uv run` (invisible-playwright MCP at session start); deps are pinned in requirements.txt + constraints.txt
+uv.lock
 
 # Claude Code harness (per-machine symlinks / generated)
 .claude/
