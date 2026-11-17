@@ -17,4 +17,4 @@ units:
   # - id: daikin
   #   name: Daikin
   #   protocol: daikin152
-  #   rm4_host: 192.168.68.59
+  #   rm4_host: 192.168.68.62
